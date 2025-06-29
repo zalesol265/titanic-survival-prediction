@@ -5,6 +5,7 @@ import pandas as pd
 from sklearn.tree import DecisionTreeClassifier, plot_tree, export_text
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import LabelEncoder
+from catboost import CatBoostClassifier
 
 
 def plot_categorical(df, col, target):
@@ -194,3 +195,209 @@ def plot_correlation_matrix(df, figsize=(10, 8), annot=True, cmap='coolwarm', ti
     plt.show()
 
     return corr
+
+
+
+# def survival_rate_by_groups(df, group_cols, target='Survived', bin_col=None, bins=None, bin_labels=None, plot=True):
+#     data = df.copy()
+
+#     # Drop rows with missing group or target values
+#     cols_to_check = group_cols + [target]
+#     if bin_col:
+#         cols_to_check.append(bin_col)
+#     data = data.dropna(subset=cols_to_check)
+
+#     # Handle optional binning
+#     if bin_col:
+#         if bins is None:
+#             # Default binning for age
+#             bins = [0, 12, 18, 30, 45, 60, 100]
+#             bin_labels = ['Child', 'Teen', '20-29', '30-44', '45-59', '60+']
+#         data[bin_col + '_group'] = pd.cut(data[bin_col], bins=bins, labels=bin_labels, right=False)
+#         group_cols = [bin_col + '_group' if col == bin_col else col for col in group_cols]
+
+#     # Group and calculate survival stats
+#     grouped = data.groupby(group_cols)[target].agg(['count', 'sum']).reset_index()
+#     grouped['survival_rate'] = grouped['sum'] / grouped['count']
+
+#     # Show table
+#     print(grouped)
+
+#     # Optional plot: only if one or two group columns
+#     if plot:
+#         if len(group_cols) == 1:
+#             x, hue = group_cols[0], None
+#         elif len(group_cols) >= 2:
+#             x, hue = group_cols[0], group_cols[1]
+#         else:
+#             x, hue = None, None
+
+#         if x:
+#             plt.figure(figsize=(10,6))
+#             ax = sns.barplot(data=grouped, x=x, y='survival_rate', hue=hue)
+
+#             plt.title(f"Survival Rate by {' and '.join(group_cols)}")
+#             plt.ylabel('Survival Rate')
+#             plt.xlabel(x)
+#             plt.ylim(0, 1)
+
+#             if hue:
+#                 plt.legend(title=hue)
+
+#             # Add percentage labels
+#             for p in ax.patches:
+#                 height = p.get_height()
+#                 if not pd.isna(height):
+#                     ax.text(
+#                         x=p.get_x() + p.get_width() / 2,
+#                         y=height + 0.02,  # adjust offset as needed
+#                         s=f'{height:.0%}',  # convert to percentage
+#                         ha='center',
+#                         va='bottom',
+#                         fontsize=9
+#                     )
+
+#             plt.tight_layout()
+#             plt.show()
+
+#     return grouped
+
+
+def survival_rate_by_groups(
+    df,
+    group_cols,
+    target='Survived',
+    bin_col=None,
+    bins=None,
+    bin_labels=None,
+    bin_method='cut',  # 'cut' or 'qcut'
+    plot=True
+):
+    data = df.copy()
+
+    # Drop rows with missing group or target values
+    cols_to_check = group_cols + [target]
+    if bin_col:
+        cols_to_check.append(bin_col)
+    data = data.dropna(subset=cols_to_check)
+
+    if bin_col:
+        if bin_method == 'qcut':
+            # qcut auto labels intervals if no labels provided
+            data[bin_col + '_group'] = pd.qcut(data[bin_col], q=bins, labels=bin_labels)
+        else:  # cut with range labels
+            if bin_labels is None:
+                # Get bin edges for cut
+                bin_edges = pd.cut(data[bin_col], bins=bins, retbins=True)[1]
+                # Create range labels
+                bin_labels = [
+                    f"{bin_edges[i]:.2f} - {bin_edges[i+1]:.2f}"
+                    for i in range(len(bin_edges)-1)
+                ]
+            data[bin_col + '_group'] = pd.cut(data[bin_col], bins=bins, labels=bin_labels, include_lowest=True)
+
+        group_cols = [bin_col + '_group' if col == bin_col else col for col in group_cols]
+
+    # Group and calculate survival stats
+    grouped = data.groupby(group_cols)[target].agg(['count', 'sum']).reset_index()
+    grouped['survival_rate'] = grouped['sum'] / grouped['count']
+
+    # Show table
+    print(grouped)
+
+    # Plot
+    if plot:
+        if len(group_cols) == 1:
+            x, hue = group_cols[0], None
+        elif len(group_cols) >= 2:
+            x, hue = group_cols[0], group_cols[1]
+        else:
+            x, hue = None, None
+
+        if x:
+            plt.figure(figsize=(10,6))
+            ax = sns.barplot(data=grouped, x=x, y='survival_rate', hue=hue)
+            plt.title(f"Survival Rate by {' and '.join(group_cols)}")
+            plt.ylabel('Survival Rate')
+            plt.xlabel(x)
+            plt.ylim(0, 1)
+
+            if hue:
+                plt.legend(title=hue)
+
+            for p in ax.patches:
+                height = p.get_height()
+                if not pd.isna(height):
+                    ax.text(
+                        x=p.get_x() + p.get_width() / 2,
+                        y=height + 0.02,
+                        s=f'{height:.0%}',
+                        ha='center',
+                        va='bottom',
+                        fontsize=9
+                    )
+
+            plt.tight_layout()
+            plt.show()
+
+    return grouped
+
+
+
+def train_catboost_and_plot_importance(df, target_col, categorical_features, numerical_features,
+                                       iterations=100, learning_rate=0.1, depth=3, random_seed=42):
+    """
+    Trains a CatBoost model and plots feature importances.
+
+    Parameters:
+    - df (pd.DataFrame): The full dataset
+    - target_col (str): The name of the target column
+    - categorical_features (list): List of categorical column names
+    - numerical_features (list): List of numerical column names
+    - iterations (int): Number of training iterations
+    - learning_rate (float): Learning rate
+    - depth (int): Tree depth
+    - random_seed (int): Random seed for reproducibility
+
+    Returns:
+    - model (CatBoostClassifier): Trained CatBoost model
+    - importance_df (pd.DataFrame): DataFrame of feature importances
+    """
+
+    # Prepare features and target
+    X = df[categorical_features + numerical_features].copy()
+    y = df[target_col]
+
+    # Ensure categorical features are string type
+    X[categorical_features] = X[categorical_features].astype(str)
+
+    # Initialize and train model
+    model = CatBoostClassifier(
+        iterations=iterations,
+        learning_rate=learning_rate,
+        depth=depth,
+        cat_features=categorical_features,
+        verbose=0,
+        random_seed=random_seed
+    )
+    model.fit(X, y)
+
+    # Get importances
+    importances = model.get_feature_importance()
+    importance_df = pd.DataFrame({
+        'Feature': X.columns,
+        'Importance': importances
+    }).sort_values(by='Importance', ascending=False)
+
+    # Print and plot
+    print(importance_df)
+    plt.figure(figsize=(8, 6))
+    sns.barplot(x='Importance', y='Feature', data=importance_df)
+    plt.title("CatBoost Feature Importances")
+    plt.xlabel("Importance")
+    plt.ylabel("Feature")
+    plt.tight_layout()
+    plt.show()
+
+    return model, importance_df
+
